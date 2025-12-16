@@ -1,0 +1,20 @@
+16:5. [Galileo Integration](#galileo-integration)
+220:- Uses `galileo.openai.openai` wrapper
+326:galileo>=1.0.0
+332:**Note**: Using `galileo>=1.0.0` (not `galileo-observe`) based on SDK examples research.
+336:GALILEO_API_KEY=your-galileo-api-key-here
+356:from galileo.openai import openai
+357:from galileo import galileo_context
+360:galileo_context.init(
+380:galileo_context.flush()  # Upload traces to Galileo
+383:**Key Insight**: The wrapper approach means zero code changes to LLM calls - just import from `galileo.openai` instead of `openai`.
+585:1. Visit https://app.galileo.ai/
+856:GALILEO_API_KEY=your-galileo-api-key-here
+1057:- Galileo uses `galileo.openai.openai` wrapper for automatic logging
+1070:- Initial confusion about `galileo-observe` vs `galileo` package
+1072:- Needed to understand `galileo_context.init()` pattern
+1160:- Galileo Console: https://app.galileo.ai/
+1161:- Galileo Docs: https://v2docs.galileo.ai/
+1162:- SDK Examples: https://github.com/rungalileo/sdk-examples
+1167:- **Galileo**: Sign up at https://galileo.ai/ → Settings → API Key
+1175:- [x] Galileo logs visible at app.galileo.ai

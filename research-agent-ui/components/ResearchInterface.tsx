@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { forwardRef, useState, useEffect, useImperativeHandle, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -21,6 +21,10 @@ interface Source {
   title: string;
   url: string;
   snippet: string;
+  confidence?: number;
+  source_type?: string;
+  domain?: string;
+  reason?: string;
 }
 
 interface ResearchResult {
@@ -33,7 +37,19 @@ interface ResearchResult {
   trace_url?: string;
 }
 
-export default function ResearchInterface() {
+export interface ResearchInterfaceHandle {
+  submitQuestion: (query: string) => void;
+}
+
+interface ResearchInterfaceProps {
+  showLocalInput?: boolean;
+  onStatusChange?: (isRunning: boolean) => void;
+}
+
+function ResearchInterface(
+  { showLocalInput = true, onStatusChange }: ResearchInterfaceProps,
+  ref: React.Ref<ResearchInterfaceHandle>
+) {
   const [question, setQuestion] = useState('');
   const [isResearching, setIsResearching] = useState(false);
   const [result, setResult] = useState<ResearchResult | null>(null);
@@ -67,21 +83,25 @@ export default function ResearchInterface() {
     },
   ]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!question.trim() || isResearching) return;
+  const executeResearch = useCallback(async (incoming?: string) => {
+    const targetQuestion = (incoming ?? question).trim();
+    if (!targetQuestion || isResearching) return;
+
+    if (incoming) {
+      setQuestion(incoming);
+    }
 
     setIsResearching(true);
     setResult(null);
     setActiveTab('answer');
 
-    setSteps(steps.map(s => ({ ...s, status: 'pending' as StepStatus, latency: undefined, score: undefined, content: undefined })));
+    setSteps(prev => prev.map(s => ({ ...s, status: 'pending' as StepStatus, latency: undefined, score: undefined, content: undefined })));
 
     try {
       const response = await fetch('/api/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: targetQuestion }),
       });
 
       if (!response.ok) throw new Error('Research failed');
@@ -121,13 +141,20 @@ export default function ResearchInterface() {
     } finally {
       setIsResearching(false);
     }
+  }, [question, isResearching]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    executeResearch();
   };
 
   const totalLatency = result?.metrics?.reduce((sum: number, m: any) => sum + (m.latency || 0), 0) || 0;
-  const avgScore = result?.metrics?.reduce((sum: number, m: any) => {
-    const score = m.quality_score || m.relevance_score || m.completeness_score || 0;
-    return sum + score;
-  }, 0) / (result?.metrics?.length || 1) || 0;
+  const scoreData = (result?.metrics || [])
+    .map((m: any) => m.quality_score || m.relevance_score || m.completeness_score || m.grounded_score)
+    .filter((score: number | undefined) => typeof score === 'number');
+  const avgScore = scoreData.length > 0
+    ? scoreData.reduce((sum: number, val: number) => sum + val, 0) / scoreData.length
+    : 0;
 
   const copyToClipboard = async () => {
     if (!result?.answer) return;
@@ -172,6 +199,12 @@ export default function ResearchInterface() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [question, isResearching]);
 
+  useEffect(() => {
+    onStatusChange?.(isResearching);
+  }, [isResearching, onStatusChange]);
+
+  useImperativeHandle(ref, () => ({ submitQuestion: (query: string) => executeResearch(query) }), [executeResearch]);
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-[80vh]">
       {/* Left Panel - Input & Steps */}
@@ -184,73 +217,81 @@ export default function ResearchInterface() {
         >
           <div className="absolute inset-0 bg-gradient-to-br from-amber-500/10 to-transparent rounded-2xl blur-2xl" />
 
-          <div className="relative bg-slate-deep-900/70 backdrop-blur-xl border border-amber-700/30 rounded-2xl p-8 shadow-2xl">
+          <div className="relative bg-slate-deep-900/70 backdrop-blur-xl border border-amber-700/30 rounded-2xl p-8 shadow-2xl min-h-[260px] flex flex-col">
             <div className="flex items-center gap-3 mb-6">
               <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
               <h2 className="font-heading text-xl font-bold text-amber-400">Research Query</h2>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div className="relative">
-                <textarea
-                  value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="Explore any topic in depth..."
-                  className="w-full bg-slate-deep-950/80 border-2 border-amber-700/40 rounded-xl px-5 py-4 text-parchment placeholder-amber-900/40 font-mono text-sm min-h-[140px] resize-none focus:outline-none focus:border-amber-500/70 focus:ring-2 focus:ring-amber-500/20 transition-all duration-300"
-                  disabled={isResearching}
-                />
-                <div className="absolute bottom-4 right-4 flex items-center gap-3">
-                  <span className="text-xs text-amber-900/30 font-mono hidden sm:block">
-                    {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+↵ to submit
-                  </span>
-                  <span className="text-xs text-amber-900/40 font-mono">
-                    {question.length} chars
-                  </span>
-                </div>
-              </div>
+            {showLocalInput ? (
+              <>
+                <form onSubmit={handleSubmit} className="space-y-5 flex-1">
+                  <div className="relative">
+                    <textarea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      placeholder="Explore any topic in depth..."
+                      className="w-full bg-slate-deep-950/80 border-2 border-amber-700/40 rounded-xl px-5 py-4 text-parchment placeholder-amber-900/40 font-mono text-sm min-h-[140px] resize-none focus:outline-none focus:border-amber-500/70 focus:ring-2 focus:ring-amber-500/20 transition-all duration-300"
+                      disabled={isResearching}
+                    />
+                    <div className="absolute bottom-4 right-4 flex items-center gap-3">
+                      <span className="text-xs text-amber-900/30 font-mono hidden sm:block">
+                        {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+↵ to submit
+                      </span>
+                      <span className="text-xs text-amber-900/40 font-mono">
+                        {question.length} chars
+                      </span>
+                    </div>
+                  </div>
 
-              <button
-                type="submit"
-                disabled={isResearching || !question.trim()}
-                className="w-full group relative overflow-hidden px-8 py-5 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-ink font-heading font-bold text-lg rounded-xl hover:from-amber-500 hover:via-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all duration-300 shadow-lg shadow-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:from-amber-600"
-              >
-                <span className="relative z-10 flex items-center justify-center gap-3">
-                  {isResearching ? (
-                    <>
-                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      Researching...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                      </svg>
-                      Initiate Research
-                    </>
-                  )}
-                </span>
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-1000" />
-              </button>
-            </form>
+                  <button
+                    type="submit"
+                    disabled={isResearching || !question.trim()}
+                    className="w-full group relative overflow-hidden px-8 py-5 bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 text-ink font-heading font-bold text-lg rounded-xl hover:from-amber-500 hover:via-amber-400 hover:to-amber-500 active:scale-[0.98] transition-all duration-300 shadow-lg shadow-amber-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:from-amber-600"
+                  >
+                    <span className="relative z-10 flex items-center justify-center gap-3">
+                      {isResearching ? (
+                        <>
+                          <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Researching...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                          Initiate Research
+                        </>
+                      )}
+                    </span>
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-1000" />
+                  </button>
+                </form>
 
-            {/* Quick Examples */}
-            {!isResearching && !result && (
-              <div className="mt-6 pt-6 border-t border-amber-700/20">
-                <p className="text-xs text-amber-900/60 font-mono mb-3">Try asking:</p>
-                <div className="flex flex-wrap gap-2">
-                  {['AI observability trends', 'RAG best practices', 'LLM evaluation methods'].map((example) => (
-                    <button
-                      key={example}
-                      onClick={() => setQuestion(example)}
-                      className="text-xs px-3 py-1.5 bg-slate-deep-950/50 hover:bg-amber-900/20 border border-amber-700/30 hover:border-amber-600/50 rounded-full text-amber-400/80 hover:text-amber-300 transition-colors font-mono"
-                    >
-                      {example}
-                    </button>
-                  ))}
-                </div>
+                {/* Quick Examples */}
+                {!isResearching && !result && (
+                  <div className="mt-6 pt-6 border-t border-amber-700/20">
+                    <p className="text-xs text-amber-900/60 font-mono mb-3">Try asking:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {['AI observability trends', 'RAG best practices', 'LLM evaluation methods'].map((example) => (
+                        <button
+                          key={example}
+                          onClick={() => executeResearch(example)}
+                          className="text-xs px-3 py-1.5 bg-slate-deep-950/50 hover:bg-amber-900/20 border border-amber-700/30 hover:border-amber-600/50 rounded-full text-amber-400/80 hover:text-amber-300 transition-colors font-mono"
+                        >
+                          {example}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-center text-amber-200/70 font-mono text-sm">
+                Use the hero prompt above to start new research runs.
               </div>
             )}
           </div>
@@ -545,6 +586,56 @@ export default function ResearchInterface() {
                             {result.answer}
                           </ReactMarkdown>
                         </div>
+
+                        {result.sources && result.sources.length > 0 && (
+                          <div className="mt-10 border-t border-amber-700/30 pt-6">
+                            <div className="flex items-center gap-2 mb-4">
+                              <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2-1.343-2-3-2zm0 0V5m0 7v7" />
+                              </svg>
+                              <span className="font-heading text-sm uppercase tracking-[0.3em] text-amber-400/80">Sources cited</span>
+                            </div>
+                            <div className="space-y-3">
+                              {result.sources.map((source, index) => (
+                                <a
+                                  key={`${source.url}-${index}`}
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block p-4 rounded-xl border border-amber-700/30 hover:border-amber-500/60 bg-slate-deep-950/40 group transition-colors"
+                                >
+                              <div className="flex items-center justify-between gap-3">
+                                <h3 className="font-heading text-base text-amber-300 group-hover:text-amber-200 line-clamp-2">{source.title}</h3>
+                                <span className="text-xs text-amber-900/60">Open ↗</span>
+                              </div>
+                              {source.snippet && (
+                                <p className="mt-1 text-sm text-parchment/75 line-clamp-2">{source.snippet}</p>
+                              )}
+                              <div className="mt-2 flex flex-wrap gap-2 text-xs text-amber-300/80">
+                                {source.source_type && (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-900/20 border border-amber-700/30 uppercase tracking-wider">
+                                    {source.source_type}
+                                  </span>
+                                )}
+                                {typeof source.confidence === 'number' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/60 border border-amber-700/20">
+                                    Confidence: {Math.round(source.confidence * 100)}%
+                                  </span>
+                                )}
+                                {source.domain && (
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/40 border border-amber-700/20">
+                                    {source.domain}
+                                  </span>
+                                )}
+                              </div>
+                              {source.reason && (
+                                <p className="mt-1 text-xs text-amber-900/70">{source.reason}</p>
+                              )}
+                            </a>
+                          ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -587,6 +678,26 @@ export default function ResearchInterface() {
                               <p className="text-xs text-amber-700/60 font-mono truncate">
                                 {source.url}
                               </p>
+                              <div className="mt-2 flex flex-wrap gap-2 text-xs text-amber-300/80">
+                                {source.source_type && (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-900/20 border border-amber-700/30 uppercase tracking-wider">
+                                    {source.source_type}
+                                  </span>
+                                )}
+                                {typeof source.confidence === 'number' && (
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/60 border border-amber-700/20">
+                                    Confidence: {Math.round(source.confidence * 100)}%
+                                  </span>
+                                )}
+                                {source.domain && (
+                                  <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/40 border border-amber-700/20">
+                                    {source.domain}
+                                  </span>
+                                )}
+                              </div>
+                              {source.reason && (
+                                <p className="mt-1 text-xs text-amber-900/70">{source.reason}</p>
+                              )}
                             </div>
                           </div>
 
@@ -629,13 +740,13 @@ export default function ResearchInterface() {
                             </span>
                           </div>
 
-                          {(metric.quality_score || metric.relevance_score || metric.completeness_score) && (
+                          {(metric.quality_score || metric.relevance_score || metric.completeness_score || metric.grounded_score) && (
                             <>
                               <div className="h-px bg-amber-700/20" />
                               <div className="flex justify-between items-center">
                                 <span className="text-sm text-amber-900/70 font-mono">Score</span>
                                 <span className="text-lg font-bold text-amber-300 font-mono">
-                                  {(metric.quality_score || metric.relevance_score || metric.completeness_score)}/10
+                                  {(metric.quality_score || metric.relevance_score || metric.completeness_score || metric.grounded_score)}/10
                                 </span>
                               </div>
                             </>
@@ -646,12 +757,29 @@ export default function ResearchInterface() {
                             <div className="h-2 bg-slate-deep-950/50 rounded-full overflow-hidden">
                               <motion.div
                                 initial={{ width: 0 }}
-                                animate={{ width: `${((metric.quality_score || metric.relevance_score || metric.completeness_score || 0) / 10) * 100}%` }}
+                                animate={{ width: `${((metric.quality_score || metric.relevance_score || metric.completeness_score || metric.grounded_score || 0) / 10) * 100}%` }}
                                 transition={{ delay: index * 0.1 + 0.3, duration: 0.8 }}
                                 className="h-full bg-gradient-to-r from-amber-600 to-amber-400"
                               />
                             </div>
                           </div>
+
+                          <div className="flex flex-wrap gap-2 mt-4 text-xs text-amber-300/80">
+                            {typeof metric.num_sources === 'number' && (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/40 border border-amber-700/20">
+                                Sources: {metric.num_sources}
+                              </span>
+                            )}
+                            {typeof metric.avg_confidence === 'number' && (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-deep-950/60 border border-amber-700/30">
+                                Avg confidence: {Math.round(metric.avg_confidence * 100)}%
+                              </span>
+                            )}
+                          </div>
+
+                          {metric.reasoning && (
+                            <p className="text-sm text-amber-900/70 mt-3">{metric.reasoning}</p>
+                          )}
                         </div>
                       </motion.div>
                     ))}
@@ -692,3 +820,5 @@ export default function ResearchInterface() {
     </div>
   );
 }
+
+export default forwardRef(ResearchInterface);

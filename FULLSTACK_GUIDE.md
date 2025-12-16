@@ -135,7 +135,7 @@ Output:
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  agent.py (ResearchAgent)                            │  │
 │  │  - LangGraph workflow                                │  │
-│  │  - 4 steps: Plan → Search → Analyze → Synthesize    │  │
+│  │  - 6 steps: Plan → Search → Curate → Analyze → Synthesize → Validate    │  │
 │  │  - Galileo logging                                   │  │
 │  └──────────────────────────────────────────────────────┘  │
 └────────────────────┬────────────────────────────────────────┘
@@ -146,7 +146,7 @@ Output:
 │  External Services                                          │
 │  - OpenAI GPT-4o-mini                                      │
 │  - Galileo Platform                                         │
-│  - DuckDuckGo Search                                        │
+│  - Tavily Search API                                        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
