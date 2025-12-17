@@ -30,6 +30,9 @@ A production-ready AI research agent that combines multi-step reasoning, documen
 
 ---
 
+<img width="1107" height="61" alt="Screenshot 2025-12-17 at 10 44 42 AM" src="https://github.com/user-attachments/assets/5f5e1761-d53b-4268-bef0-ebd763ead7c5" />
+
+
 ## ✨ Features
 
 ### Core Capabilities
