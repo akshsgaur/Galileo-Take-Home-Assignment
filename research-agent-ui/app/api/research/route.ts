@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { getPythonBackendBaseUrl } from '@/lib/pythonBackend';
+import { buildBackendHeaders } from '@/lib/backendHeaders';
+
+const RELATIVE_PATH = '/research';
+
 export async function POST(request: NextRequest) {
   try {
-    const { question } = await request.json();
+    const body = await request.json();
+    const { question, ...rest } = body;
 
     if (!question || typeof question !== 'string') {
       return NextResponse.json(
@@ -18,23 +24,28 @@ export async function POST(request: NextRequest) {
     // 3. Have a separate Python API server
 
     // For now, we'll call a Python API endpoint (you'll need to create this)
-    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000/research';
-
-    const response = await fetch(pythonBackendUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ question }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Python backend returned ${response.status}`);
+    const headers = await buildBackendHeaders({ 'Content-Type': 'application/json' });
+    if (!headers) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const data = await response.json();
+    const backendBase = getPythonBackendBaseUrl();
+    const response = await fetch(`${backendBase}${RELATIVE_PATH}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ question, ...rest }),
+    });
 
-    return NextResponse.json(data);
+    const payload = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: 'Research failed', details: payload },
+        { status: response.status }
+      );
+    }
+
+    return NextResponse.json(payload);
   } catch (error) {
     console.error('API error:', error);
 

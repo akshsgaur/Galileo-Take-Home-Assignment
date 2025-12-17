@@ -1,13 +1,79 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import {
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  SignUpButton,
+  UserButton,
+  useUser,
+} from '@clerk/nextjs';
+
 import ResearchInterface, { ResearchInterfaceHandle } from '@/components/ResearchInterface';
 
-export default function Home() {
+type Attachment = {
+  clientId: string;
+  filename: string;
+  status: 'uploading' | 'ready' | 'error';
+  documentId?: string;
+  errorMessage?: string;
+};
+
+type StoredDocument = {
+  id: string;
+  filename: string;
+  file_size?: number;
+  file_type?: string;
+  num_chunks?: number;
+  uploaded_at?: string;
+  status?: string;
+};
+
+const formatFileSize = (bytes?: number) => {
+  if (!bytes && bytes !== 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+function ResearchWorkspace() {
   const researchRef = useRef<ResearchInterfaceHandle>(null);
   const [heroQuery, setHeroQuery] = useState('');
   const [isHeroRunning, setIsHeroRunning] = useState(false);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [useChatHistory, setUseChatHistory] = useState(true);
+  const [chatSessionId, setChatSessionId] = useState<string | undefined>(undefined);
+  const { user } = useUser();
+  const [documents, setDocuments] = useState<StoredDocument[]>([]);
+  const [isDocsLoading, setIsDocsLoading] = useState(true);
+  const [workflowStep, setWorkflowStep] = useState<'idle' | 'plan' | 'search' | 'analyze' | 'synthesize' | 'validate'>('idle');
+
+  const readyDocumentIds = attachments
+    .filter((attachment) => attachment.status === 'ready' && attachment.documentId)
+    .map((attachment) => attachment.documentId as string);
+
+  const fetchDocuments = useCallback(async () => {
+    try {
+      setIsDocsLoading(true);
+      const response = await fetch('/api/documents', { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error('Failed to load documents');
+      }
+      const data = await response.json();
+      setDocuments(Array.isArray(data?.documents) ? data.documents : []);
+    } catch (error) {
+      console.error('Failed to fetch documents', error);
+    } finally {
+      setIsDocsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDocuments();
+  }, [fetchDocuments]);
 
   const handleHeroSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -17,123 +83,322 @@ export default function Home() {
     setHeroQuery('');
   };
 
+  const handleAttachClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const clientId = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random()}`;
+
+    setAttachments((prev) => [
+      ...prev,
+      {
+        clientId,
+        filename: file.name,
+        status: 'uploading',
+      },
+    ]);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('/api/documents/upload', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        let message = 'Upload failed';
+        try {
+          const errorData = await response.json();
+          message = errorData?.error || message;
+        } catch (jsonError) {
+          console.error('Upload JSON parse error:', jsonError);
+        }
+        throw new Error(message);
+      }
+
+      const data = await response.json();
+      setAttachments((prev) => prev.map((attachment) => (
+        attachment.clientId === clientId
+          ? {
+              ...attachment,
+              status: 'ready',
+              documentId: data.document_id,
+              errorMessage: undefined,
+            }
+          : attachment
+      )));
+      await fetchDocuments();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Upload failed';
+      setAttachments((prev) => prev.map((attachment) => (
+        attachment.clientId === clientId
+          ? {
+              ...attachment,
+              status: 'error',
+              errorMessage: message,
+            }
+          : attachment
+      )));
+    } finally {
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemoveAttachment = async (clientId: string, documentId?: string) => {
+    setAttachments((prev) => prev.filter((attachment) => attachment.clientId !== clientId));
+
+    if (documentId) {
+      try {
+        await fetch(`/api/documents/${documentId}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+        setDocuments((prev) => prev.filter((doc) => doc.id !== documentId));
+      } catch (error) {
+        console.error('Failed to delete document', error);
+      }
+    }
+  };
+
+  const handleDeleteDocument = async (documentId: string) => {
+    try {
+      await fetch(`/api/documents/${documentId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      setDocuments((prev) => prev.filter((doc) => doc.id !== documentId));
+      setAttachments((prev) => prev.filter((att) => att.documentId !== documentId));
+    } catch (error) {
+      console.error('Failed to delete document', error);
+    }
+  };
+
+  const userLabel = user?.primaryEmailAddress?.emailAddress
+    || user?.emailAddresses?.[0]?.emailAddress
+    || user?.username
+    || 'Signed in';
+
+
   return (
-    <main className="min-h-screen bg-[#050505] text-white">
-      <div className="relative overflow-hidden">
-        {/* Radial gradients to mimic Lovable hero */}
-        <div className="pointer-events-none absolute inset-0">
-          <div className="absolute inset-0 bg-gradient-to-b from-[#050505] via-[#11152a] to-[#f26b21] opacity-90" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(67,93,255,0.35),_transparent_55%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom,_rgba(242,107,33,0.45),_transparent_50%)]" />
+    <div className="relative flex flex-col h-screen">
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 md:px-8 lg:px-12 pt-6">
+        <div className="flex justify-end">
+          <div className="flex items-center gap-3 text-sm text-white/80">
+            <span className="rounded-full border border-white/10 bg-black/30 px-4 py-1.5 font-medium">
+              {userLabel}
+            </span>
+            <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: 'ring-2 ring-white/20' } }} />
+          </div>
         </div>
+      </div>
 
-        <div className="relative max-w-5xl mx-auto px-6 md:px-8 lg:px-12">
-          {/* Hero */}
-          <section className="pt-24 pb-32 text-center">
-            <p className="text-3xl md:text-4xl font-semibold tracking-tight flex items-center justify-center gap-4">
-              <span>Research with</span>
-              <img src="/galileo_ai_logo.jpeg" alt="Galileo" className="h-10 w-10 md:h-12 md:w-12 rounded-full" />
-              <span className="text-white">confidence</span>
-            </p>
-            <p className="mt-4 text-lg text-white/75">
-              Create observability-ready research experiences just by chatting with AI.
-            </p>
-
-            {/* Prompt card */}
-            <form onSubmit={handleHeroSubmit} className="mx-auto mt-16 max-w-3xl rounded-[30px] bg-[#1b1b1b] border border-white/10 shadow-[0_15px_60px_rgba(5,5,5,0.45)]">
-              <div className="px-8 pt-6 pb-4 text-left text-white/80 text-xl font-medium">
-                <input
-                  type="text"
+      {/* Scrollable Content Area */}
+      <div className="flex-1 overflow-y-auto px-6 md:px-8 lg:px-12 pt-8">
+        <div className="max-w-5xl mx-auto pb-32 space-y-8">
+          <div className="rounded-[30px] border border-white/10 bg-[#0a0a0a]/90 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.55)] backdrop-blur">
+            <form onSubmit={handleHeroSubmit} className="space-y-4">
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                accept=".pdf,.docx,.txt"
+                onChange={handleFileChange}
+              />
+              <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40 font-mono">
+                <span>Ask anything</span>
+                <button
+                  type="button"
+                  onClick={() => setUseChatHistory((prev) => !prev)}
+                  className={`px-3 py-1.5 rounded-full border text-[0.6rem] tracking-wide transition-colors duration-200 ${useChatHistory ? 'border-white/40 bg-white/10 text-white' : 'border-white/20 text-white/60 hover:text-white/80 hover:border-white/40'}`}
+                >
+                  Chat history {useChatHistory ? 'On' : 'Off'}
+                </button>
+              </div>
+              <div className="rounded-[24px] border border-white/10 bg-[#1b1b1b] px-5 py-4 flex items-center gap-4">
+                <textarea
                   value={heroQuery}
                   onChange={(e) => setHeroQuery(e.target.value)}
                   placeholder="Ask Galileo to create a research brief..."
-                  className="w-full bg-transparent border-0 focus:outline-none text-white/80 text-xl"
+                  className="flex-1 bg-transparent resize-none text-base text-white/80 focus:outline-none"
+                  rows={2}
                   disabled={isHeroRunning}
                 />
+                <button
+                  type="submit"
+                  disabled={isHeroRunning || !heroQuery.trim()}
+                  className="h-11 w-11 rounded-[20px] border border-white/20 text-white flex items-center justify-center disabled:opacity-40 transition-colors duration-200 hover:border-white/60"
+                >
+                  ↑
+                </button>
               </div>
-              <div className="px-8 pb-6 flex flex-wrap items-center gap-3 text-sm text-white/70">
-                <div className="flex items-center gap-3">
-                  <button type="button" className="h-8 w-8 rounded-full border border-white/15 flex items-center justify-center text-lg text-white/80 bg-black/30 font-normal">
-                    +
-                  </button>
-                  <button type="button" className="flex items-center gap-2 rounded-full border border-white/15 px-3 py-1 bg-black/30 text-base font-normal">
-                    Attach
-                  </button>
-                  {/* <button type="button" className="flex items-center gap-2 rounded-full border border-white/15 px-4 py-1.5 bg-black/30">
-                    <span className="text-sm font-semibold uppercase tracking-wide">Theme</span>
-                    <span className="text-xs">▼</span>
-                  </button> */}
+              <div className="flex flex-wrap items-center gap-3 text-sm text-white/70">
+                <button
+                  type="button"
+                  onClick={handleAttachClick}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/15 px-3 py-1 bg-black/40 text-sm font-normal transition-colors duration-200 hover:border-white/30 hover:bg-black/60"
+                >
+                  <span className="text-lg leading-none">+</span>
+                  Attach document
+                </button>
+                <div className="flex-1 min-w-[120px] text-[0.7rem] uppercase tracking-[0.25em] text-white/40">
+                  {readyDocumentIds.length ? `${readyDocumentIds.length} docs ready` : 'Attach documents'}
                 </div>
-                <div className="flex-1" />
-                <div className="flex items-center gap-3">
-                  <button type="button" className="flex items-center gap-2 rounded-full border border-white/30 px-3 py-1 text-white text-base font-normal">
-                    Chat
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isHeroRunning || !heroQuery.trim()}
-                    className="h-8 w-8 rounded-full border border-white/30 text-white text-base flex items-center justify-center disabled:opacity-50"
-                  >
-                    ↑
-                  </button>
+              </div>
+              {attachments.length > 0 && (
+                <div className="space-y-2 text-sm text-white/70">
+                  {attachments.map((attachment) => (
+                    <div
+                      key={attachment.clientId}
+                      className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/30 px-4 py-2"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-white/80">{attachment.filename}</p>
+                        {attachment.status === 'uploading' && (
+                          <p className="text-xs text-white/50">Uploading...</p>
+                        )}
+                        {attachment.status === 'ready' && (
+                          <p className="text-xs text-emerald-400">Ready for RAG</p>
+                        )}
+                        {attachment.status === 'error' && (
+                          <p className="text-xs text-red-400">{attachment.errorMessage}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAttachment(attachment.clientId, attachment.documentId)}
+                        className="text-xs text-white/60 hover:text-white"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
                 </div>
+              )}
+              <div className="space-y-2 text-sm text-white/70">
+                <p className="text-xs uppercase tracking-[0.3em] text-white/40 font-mono mt-4">
+                  Your documents
+                </p>
+                {isDocsLoading && (
+                  <p className="text-xs text-white/50">Loading documents…</p>
+                )}
+                {!isDocsLoading && documents.length === 0 && (
+                  <p className="text-xs text-white/50">No documents uploaded yet.</p>
+                )}
+                {!isDocsLoading && documents.length > 0 && (
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                    {documents.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/30 px-4 py-2"
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-white/80">{doc.filename}</p>
+                          <p className="text-xs text-white/50">
+                            {formatFileSize(doc.file_size)} • {doc.status ?? 'ready'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          className="text-xs text-white/60 hover:text-red-400"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </form>
-          </section>
-        </div>
-
-        {/* Gradient divider */}
-        <div className="h-32 bg-gradient-to-b from-transparent via-[#f26b21]/30 to-[#050505]" />
-      </div>
-
-      {/* Research experience */}
-      <section className="relative z-10 -mt-16 pb-24">
-        <div className="max-w-6xl mx-auto px-6 md:px-8 lg:px-12">
-          <div className="rounded-[40px] bg-black/60 border border-white/10 shadow-[0_20px_120px_rgba(0,0,0,0.5)] overflow-hidden">
-            <div className="px-8 py-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.3em] text-white/40 font-mono">Launch-pad</p>
-                <h2 className="text-3xl md:text-4xl font-semibold mt-2">
-                  Explore the research pipeline live
-                </h2>
-                <p className="text-white/70 mt-4 max-w-xl">
-                  Same functionality as before—Plan → Search → Curate → Analyze → Synthesize → Validate—with fresh hero polish inspired by the Lovable reference.
-                </p>
-              </div>
-              <div className="flex gap-3">
-                <Link
-                  href="#research-playground"
-                  className="px-5 py-3 rounded-full border border-white/20 text-sm text-white/80 hover:text-white"
-                >
-                  View docs
-                </Link>
-                <a
-                  href="https://app.galileo.ai"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-5 py-3 rounded-full bg-white text-[#050505] font-semibold text-sm"
-                >
-                  Open Galileo
-                </a>
-              </div>
-            </div>
-
-            <div id="research-playground" className="bg-[#080808] px-4 pb-12 md:px-8">
-              <ResearchInterface ref={researchRef} showLocalInput={false} onStatusChange={setIsHeroRunning} />
-            </div>
           </div>
-        </div>
-      </section>
 
-      <footer className="py-12 text-center text-white/60 text-sm">
-        <div className="flex flex-wrap items-center justify-center gap-4 font-mono text-xs uppercase tracking-[0.2em]">
-          <span>© {new Date().getFullYear()} Galileo Studio</span>
-          <span>•</span>
-          <span>Powered by Galileo + OpenAI</span>
-          <span>•</span>
-          <span>Built with Next.js</span>
+          <div className="rounded-[40px] border border-white/10 bg-black/40/80 p-6 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur space-y-4">
+            <div className="flex items-center gap-2 text-[0.6rem] uppercase tracking-[0.4em] text-white/50 font-mono">
+              {['plan','search','analyze','synthesize','validate'].map((step) => (
+                <div
+                  key={step}
+                  className={`flex-1 text-center py-1 rounded-full border border-white/10 ${workflowStep === step ? 'bg-white/10 text-white border-white/30' : 'text-white/40'}`}
+                >
+                  {step}
+                </div>
+              ))}
+            </div>
+            <ResearchInterface
+              ref={researchRef}
+              showLocalInput={false}
+              onStatusChange={setIsHeroRunning}
+              onStepChange={(step) => setWorkflowStep(step as typeof workflowStep)}
+              attachedDocumentIds={readyDocumentIds}
+              useChatHistory={useChatHistory}
+              chatSessionId={chatSessionId}
+              onSessionUpdate={setChatSessionId}
+            />
+          </div>
+          <p className="text-center text-xs uppercase tracking-[0.4em] text-white/40 font-mono">
+            Powered by <Link href="https://galileo.ai" className="underline">Galileo RAG Observability</Link>
+          </p>
         </div>
-      </footer>
+      </div>
+    </div>
+  );
+}
+
+function AuthGate() {
+  return (
+    <div className="w-full max-w-md rounded-[30px] border border-white/10 bg-black/40 p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)] text-center">
+      <p className="text-xs uppercase tracking-[0.35em] text-white/40 font-mono">Galileo Research Stack</p>
+      <h1 className="mt-4 text-3xl font-semibold">Sign in to continue</h1>
+      <p className="mt-3 text-sm text-white/70">
+        Securely upload documents, run evaluations, and keep chat history scoped to your workspace.
+      </p>
+      <div className="mt-8 flex flex-col gap-3">
+        <SignInButton mode="modal">
+          <button className="w-full rounded-2xl bg-white text-black py-3 font-semibold tracking-wide">
+            Sign in
+          </button>
+        </SignInButton>
+        <SignUpButton mode="modal">
+          <button className="w-full rounded-2xl border border-white/20 py-3 font-semibold tracking-wide text-white">
+            Create account
+          </button>
+        </SignUpButton>
+      </div>
+    </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-[#050505] text-white">
+      <div className="relative overflow-hidden">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute inset-0 bg-gradient-to-b from-[#050505] via-[#111111] to-[#1a1a1a] opacity-90" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(50,50,50,0.25),_transparent_55%)]" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom,_rgba(40,40,40,0.35),_transparent_50%)]" />
+        </div>
+
+        <SignedOut>
+          <div className="relative flex min-h-screen items-center justify-center px-6">
+            <AuthGate />
+          </div>
+        </SignedOut>
+
+        <SignedIn>
+          <ResearchWorkspace />
+        </SignedIn>
+      </div>
     </main>
   );
 }
