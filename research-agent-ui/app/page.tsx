@@ -50,10 +50,20 @@ function ResearchWorkspace() {
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
   const [isDocsLoading, setIsDocsLoading] = useState(true);
   const [workflowStep, setWorkflowStep] = useState<'idle' | 'plan' | 'search' | 'analyze' | 'synthesize' | 'validate'>('idle');
+  const [hasSubmittedQuery, setHasSubmittedQuery] = useState(false);
+  const [pendingQuery, setPendingQuery] = useState<string | null>(null);
 
-  const readyDocumentIds = attachments
+  // Include both newly attached documents and all existing documents
+  const attachedDocIds = attachments
     .filter((attachment) => attachment.status === 'ready' && attachment.documentId)
     .map((attachment) => attachment.documentId as string);
+
+  const allDocumentIds = [
+    ...attachedDocIds,
+    ...documents.map(doc => doc.id)
+  ];
+
+  const readyDocumentIds = [...new Set(allDocumentIds)]; // Deduplicate
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -79,9 +89,20 @@ function ResearchWorkspace() {
     e.preventDefault();
     const trimmed = heroQuery.trim();
     if (!trimmed || isHeroRunning) return;
-    researchRef.current?.submitQuestion(trimmed);
+
+    // Store query and switch to chat mode
+    setPendingQuery(trimmed);
+    setHasSubmittedQuery(true);
     setHeroQuery('');
   };
+
+  // Trigger research when switching to chat mode with pending query
+  useEffect(() => {
+    if (hasSubmittedQuery && pendingQuery && researchRef.current) {
+      researchRef.current.submitQuestion(pendingQuery);
+      setPendingQuery(null);
+    }
+  }, [hasSubmittedQuery, pendingQuery]);
 
   const handleAttachClick = () => {
     fileInputRef.current?.click();
@@ -189,26 +210,9 @@ function ResearchWorkspace() {
     || user?.username
     || 'Signed in';
 
-
-  return (
-    <div className="relative flex flex-col h-screen">
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 md:px-8 lg:px-12 pt-6">
-        <div className="flex justify-end">
-          <div className="flex items-center gap-3 text-sm text-white/80">
-            <span className="rounded-full border border-white/10 bg-black/30 px-4 py-1.5 font-medium">
-              {userLabel}
-            </span>
-            <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: 'ring-2 ring-white/20' } }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Scrollable Content Area */}
-      <div className="flex-1 overflow-y-auto px-6 md:px-8 lg:px-12 pt-8">
-        <div className="max-w-5xl mx-auto pb-32 space-y-8">
-          <div className="rounded-[30px] border border-white/10 bg-[#0a0a0a]/90 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.55)] backdrop-blur">
-            <form onSubmit={handleHeroSubmit} className="space-y-4">
+  const renderFullInputForm = () => (
+    <div className="rounded-[30px] border border-white/10 bg-[#0a0a0a]/90 p-5 shadow-[0_20px_80px_rgba(0,0,0,0.55)] backdrop-blur">
+      <form onSubmit={handleHeroSubmit} className="space-y-4">
               <input
                 type="file"
                 ref={fileInputRef}
@@ -321,10 +325,145 @@ function ResearchWorkspace() {
                   </div>
                 )}
               </div>
-            </form>
+      </form>
+    </div>
+  );
+
+  const renderMinimalInputForm = () => (
+    <div className="space-y-3">
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {attachments.map((attachment) => (
+            <div
+              key={attachment.clientId}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs"
+            >
+              <span className="text-white/70">{attachment.filename}</span>
+              {attachment.status === 'uploading' && (
+                <span className="text-white/40">⏳</span>
+              )}
+              {attachment.status === 'ready' && (
+                <span className="text-emerald-400">✓</span>
+              )}
+              {attachment.status === 'error' && (
+                <span className="text-red-400">✗</span>
+              )}
+              <button
+                type="button"
+                onClick={() => handleRemoveAttachment(attachment.clientId, attachment.documentId)}
+                className="text-white/40 hover:text-white/80"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <form onSubmit={handleHeroSubmit} className="flex items-center gap-3">
+        <input
+          type="file"
+          ref={fileInputRef}
+          className="hidden"
+          accept=".pdf,.docx,.txt"
+          onChange={handleFileChange}
+        />
+        <button
+          type="button"
+          onClick={handleAttachClick}
+          className="h-11 w-11 rounded-xl border border-white/20 text-white/60 flex items-center justify-center transition-colors duration-200 hover:border-white/40 hover:text-white"
+          title="Attach document"
+        >
+          <span className="text-xl">+</span>
+        </button>
+        <div className="flex-1 rounded-[20px] border border-white/10 bg-[#1b1b1b] px-5 py-3 flex items-center gap-3">
+          <textarea
+            value={heroQuery}
+            onChange={(e) => setHeroQuery(e.target.value)}
+            placeholder="Ask a follow-up question..."
+            className="flex-1 bg-transparent resize-none text-base text-white/80 focus:outline-none"
+            rows={1}
+            disabled={isHeroRunning}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleHeroSubmit(e);
+              }
+            }}
+          />
+          <button
+            type="submit"
+            disabled={isHeroRunning || !heroQuery.trim()}
+            className="h-9 w-9 rounded-xl border border-white/20 text-white flex items-center justify-center disabled:opacity-40 transition-colors duration-200 hover:border-white/60"
+          >
+            ↑
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={() => setUseChatHistory((prev) => !prev)}
+          className={`px-4 py-2.5 rounded-xl border text-xs tracking-wide transition-colors duration-200 whitespace-nowrap ${useChatHistory ? 'border-white/40 bg-white/10 text-white' : 'border-white/20 text-white/60 hover:text-white/80 hover:border-white/40'}`}
+        >
+          History {useChatHistory ? 'On' : 'Off'}
+        </button>
+      </form>
+    </div>
+  );
+
+  /* Hero Mode - Before first query */
+  if (!hasSubmittedQuery) {
+    return (
+      <div className="relative min-h-screen">
+        <div className="flex justify-end px-6 md:px-8 lg:px-12 pt-6">
+          <div className="flex items-center gap-3 text-sm text-white/80">
+            <span className="rounded-full border border-white/10 bg-black/30 px-4 py-1.5 font-medium">
+              {userLabel}
+            </span>
+            <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: 'ring-2 ring-white/20' } }} />
+          </div>
+        </div>
+
+        <div className="max-w-5xl mx-auto px-6 md:px-8 lg:px-12 pt-24 pb-32">
+          <div className="text-center mb-12">
+            <p className="text-xs uppercase tracking-[0.4em] text-white/40 font-mono mb-4">
+              Research with confidence
+            </p>
+            <h1 className="text-5xl font-bold text-white/95 mb-3">
+              Galileo Research Agent
+            </h1>
+            <p className="text-lg text-white/60">
+              AI-powered research with RAG evaluation
+            </p>
           </div>
 
-          <div className="rounded-[40px] border border-white/10 bg-black/40/80 p-6 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur space-y-4">
+          {renderFullInputForm()}
+
+          <p className="text-center text-xs uppercase tracking-[0.4em] text-white/40 font-mono mt-12">
+            Powered by <Link href="https://galileo.ai" className="underline">Galileo RAG Observability</Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  /* Chat Mode - After first query */
+  return (
+    <div className="relative flex flex-col h-screen">
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 md:px-8 lg:px-12 pt-6">
+        <div className="flex justify-end">
+          <div className="flex items-center gap-3 text-sm text-white/80">
+            <span className="rounded-full border border-white/10 bg-black/30 px-4 py-1.5 font-medium">
+              {userLabel}
+            </span>
+            <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: 'ring-2 ring-white/20' } }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Scrollable Content Area */}
+      <div className="flex-1 overflow-y-auto px-6 md:px-8 lg:px-12 pt-8 pb-0">
+        <div className="max-w-5xl mx-auto">
+          <div className="rounded-t-[40px] border-x border-t border-white/10 bg-black/40/80 p-6 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur space-y-4">
             <div className="flex items-center gap-2 text-[0.6rem] uppercase tracking-[0.4em] text-white/50 font-mono">
               {['plan','search','analyze','synthesize','validate'].map((step) => (
                 <div
@@ -346,9 +485,15 @@ function ResearchWorkspace() {
               onSessionUpdate={setChatSessionId}
             />
           </div>
-          <p className="text-center text-xs uppercase tracking-[0.4em] text-white/40 font-mono">
-            Powered by <Link href="https://galileo.ai" className="underline">Galileo RAG Observability</Link>
-          </p>
+        </div>
+      </div>
+
+      {/* Fixed Input at Bottom */}
+      <div className="flex-shrink-0 px-6 md:px-8 lg:px-12 pb-4">
+        <div className="max-w-5xl mx-auto">
+          <div className="rounded-b-[40px] border-x border-b border-white/10 bg-black/40/80 backdrop-blur p-6 shadow-[0_20px_80px_rgba(0,0,0,0.45)]">
+            {renderMinimalInputForm()}
+          </div>
         </div>
       </div>
     </div>
@@ -357,23 +502,25 @@ function ResearchWorkspace() {
 
 function AuthGate() {
   return (
-    <div className="w-full max-w-md rounded-[30px] border border-white/10 bg-black/40 p-8 shadow-[0_20px_60px_rgba(0,0,0,0.45)] text-center">
-      <p className="text-xs uppercase tracking-[0.35em] text-white/40 font-mono">Galileo Research Stack</p>
-      <h1 className="mt-4 text-3xl font-semibold">Sign in to continue</h1>
-      <p className="mt-3 text-sm text-white/70">
-        Securely upload documents, run evaluations, and keep chat history scoped to your workspace.
-      </p>
-      <div className="mt-8 flex flex-col gap-3">
-        <SignInButton mode="modal">
-          <button className="w-full rounded-2xl bg-white text-black py-3 font-semibold tracking-wide">
-            Sign in
-          </button>
-        </SignInButton>
-        <SignUpButton mode="modal">
-          <button className="w-full rounded-2xl border border-white/20 py-3 font-semibold tracking-wide text-white">
-            Create account
-          </button>
-        </SignUpButton>
+    <div className="min-h-screen flex items-center justify-center px-6">
+      <div className="w-full max-w-md rounded-[30px] border border-white/10 bg-[#0a0a0a]/90 p-10 shadow-[0_20px_80px_rgba(0,0,0,0.55)] backdrop-blur text-center">
+        <p className="text-xs uppercase tracking-[0.35em] text-white/40 font-mono">Galileo Research Stack</p>
+        <h1 className="mt-6 text-4xl font-bold text-white/95">Sign in to continue</h1>
+        <p className="mt-4 text-base text-white/60">
+          Securely upload documents, run evaluations, and keep chat history scoped to your workspace.
+        </p>
+        <div className="mt-10 flex flex-col gap-4">
+          <SignInButton mode="modal">
+            <button className="w-full rounded-2xl bg-white text-black py-3.5 font-semibold tracking-wide transition-all hover:bg-white/90">
+              Sign in
+            </button>
+          </SignInButton>
+          <SignUpButton mode="modal">
+            <button className="w-full rounded-2xl border border-white/20 py-3.5 font-semibold tracking-wide text-white transition-all hover:border-white/40 hover:bg-white/5">
+              Create account
+            </button>
+          </SignUpButton>
+        </div>
       </div>
     </div>
   );
@@ -390,9 +537,7 @@ export default function Home() {
         </div>
 
         <SignedOut>
-          <div className="relative flex min-h-screen items-center justify-center px-6">
-            <AuthGate />
-          </div>
+          <AuthGate />
         </SignedOut>
 
         <SignedIn>
